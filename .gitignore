@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+
+# Optional React UI (not used for Streamlit deploy)
+field-ops-web/node_modules/
+field-ops-web/dist/
+
+# Keep Data-day-wise/ and Site Locations/ in git for Cloud deploy with bundled Excel data

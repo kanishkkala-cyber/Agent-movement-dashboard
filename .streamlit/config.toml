@@ -1,0 +1,10 @@
+# Works for Streamlit Community Cloud and local: streamlit run app.py
+[server]
+headless = true
+maxUploadSize = 200
+enableXsrfProtection = true
+address = "localhost"
+port = 8501
+
+[browser]
+gatherUsageStats = false
