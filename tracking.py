@@ -32,7 +32,21 @@ from core import (
     punch_data_source_label,
     sites_data_dir,
 )
+from dashboard_filters import (
+    TRACKING_COMMITTED,
+    TRACKING_PRESERVE_DATE,
+    TRACKING_WIDGETS_READY,
+    tracking_commit_date,
+    tracking_commit_from_widgets,
+    tracking_dates_with_pings,
+    tracking_filter_defaults,
+    tracking_fingerprint,
+    tracking_resolve_filters,
+    tracking_sync_widgets,
+)
 from responsive_ui import RESPONSIVE_DASHBOARD_CSS
+
+EMPTY_FILTERS_MSG = "No GPS data available for selected filters."
 
 DASH_EXTRA_CSS = """
 <style>
@@ -150,57 +164,27 @@ def _defaults_for_employee(scoped: pd.DataFrame, employee: str) -> tuple[date, s
 def _default_committed(scoped: pd.DataFrame, employees: list[str]) -> dict:
     emp0 = employees[0]
     d, tf, tt = _defaults_for_employee(scoped, emp0)
-    return {
-        "employee": emp0,
-        "date": d,
-        "from": tf,
-        "to": tt,
-        "yards": True,
-        "service": True,
-        "stores": True,
-    }
+    return tracking_filter_defaults(employee=emp0, sel_date=d, time_from=tf, time_to=tt)
 
 
 def _active_filter_date() -> date:
-    """Single source of truth for the date driving KPIs, map, and calendar highlight."""
-    return st.session_state.committed["date"]
-
-
-def _commit_active_date(d: date) -> None:
-    """Sync widget date + committed date so calendar, popover label, and analytics match."""
-    st.session_state.flt_date = d
-    c = dict(st.session_state.committed)
-    c["date"] = d
-    st.session_state.committed = c
-    st.session_state.avail_cal_month = d.replace(day=1)
+    return st.session_state[TRACKING_COMMITTED]["date"]
 
 
 def _on_flt_date_change() -> None:
-    _commit_active_date(st.session_state.flt_date)
+    tracking_commit_date(st.session_state.flt_date)
 
 
-def _sync_widgets_from_committed(c: dict) -> None:
-    """Push committed filters into widget keys — call only before filter widgets render."""
-    st.session_state.flt_employee = c["employee"]
-    st.session_state.flt_date = c["date"]
-    st.session_state.flt_from = c["from"]
-    st.session_state.flt_to = c["to"]
-    st.session_state.flt_yards = c["yards"]
-    st.session_state.flt_service = c["service"]
-    st.session_state.flt_stores = c["stores"]
-    st.session_state.avail_cal_month = c["date"].replace(day=1)
-
-
-def _snapshot_from_widgets() -> dict:
-    return {
-        "employee": st.session_state.flt_employee,
-        "date": st.session_state.flt_date,
-        "from": st.session_state.flt_from,
-        "to": st.session_state.flt_to,
-        "yards": st.session_state.flt_yards,
-        "service": st.session_state.flt_service,
-        "stores": st.session_state.flt_stores,
-    }
+def _on_flt_employee_change() -> None:
+    em = st.session_state.flt_employee
+    if em != ALL_AGENTS_LABEL:
+        scoped_cb = load_punch_data_cached()
+        dh = tracking_dates_with_pings(scoped_cb, em)
+        if dh:
+            st.session_state.avail_cal_month = max(dh).replace(day=1)
+        else:
+            st.session_state.avail_cal_month = date.today().replace(day=1)
+    tracking_commit_from_widgets()
 
 
 def _kpi_card(label: str, value: str, sub: str = "", delta_html: str = "") -> str:
@@ -209,13 +193,6 @@ def _kpi_card(label: str, value: str, sub: str = "", delta_html: str = "") -> st
     sub_e = html.escape(sub)
     return f"""<div class="kpi-card"><div class="kpi-label">{label_e}</div>
 <div class="kpi-value">{value_e}</div><div class="kpi-sub">{sub_e}</div>{delta_html}</div>"""
-
-
-def _dates_with_pings(scoped: pd.DataFrame, employee: str, name_col: str) -> set[date]:
-    sub = scoped.loc[scoped[name_col].astype(str) == str(employee)]
-    if sub.empty:
-        return set()
-    return set(pd.to_datetime(sub["_ts"], errors="coerce").dt.date.dropna().unique())
 
 
 def _day_status(
@@ -356,7 +333,7 @@ def _render_date_availability_picker(
                     help=tip,
                     disabled=status in ("future", "out"),
                 ):
-                    _commit_active_date(d)
+                    tracking_commit_date(d)
                     st.rerun()
 
     st.markdown(
@@ -409,34 +386,20 @@ def run() -> None:
     emp_options = [ALL_AGENTS_LABEL] + employees
     tchoices = _time_choices()
 
-    if "committed" not in st.session_state:
-        st.session_state.committed = _default_committed(scoped, employees)
-    if "flt_widgets_ready" not in st.session_state:
-        _sync_widgets_from_committed(st.session_state.committed)
-        st.session_state.flt_widgets_ready = True
+    if TRACKING_COMMITTED not in st.session_state:
+        st.session_state[TRACKING_COMMITTED] = _default_committed(scoped, employees)
+    if not st.session_state.get(TRACKING_WIDGETS_READY):
+        tracking_sync_widgets(st.session_state[TRACKING_COMMITTED])
+        st.session_state[TRACKING_WIDGETS_READY] = True
     if "avail_cal_month" not in st.session_state:
-        st.session_state.avail_cal_month = st.session_state.committed["date"].replace(day=1)
-
-    # Keep date widget in sync with committed before rendering filters.
-    active_d = _active_filter_date()
-    if st.session_state.get("flt_date") != active_d:
-        st.session_state.flt_date = active_d
-        st.session_state.avail_cal_month = active_d.replace(day=1)
+        st.session_state.avail_cal_month = st.session_state[TRACKING_COMMITTED]["date"].replace(
+            day=1
+        )
 
     d_lo = scoped["_ts"].min().date()
     d_hi = scoped["_ts"].max().date()
 
     st.markdown('<div class="filter-glass filter-toolbar-anchor"></div>', unsafe_allow_html=True)
-
-    def _on_employee_change_calendar() -> None:
-        em = st.session_state.flt_employee
-        if em == ALL_AGENTS_LABEL:
-            return
-        dh = _dates_with_pings(scoped, em, name_col)
-        if dh:
-            st.session_state.avail_cal_month = max(dh).replace(day=1)
-        else:
-            st.session_state.avail_cal_month = date.today().replace(day=1)
 
     r1 = st.columns([2.4, 1.2, 1.0, 1.0])
     with r1[0]:
@@ -446,7 +409,7 @@ def run() -> None:
             key="flt_employee",
             placeholder="Search or select",
             filter_mode="fuzzy",
-            on_change=_on_employee_change_calendar,
+            on_change=_on_flt_employee_change,
         )
     with r1[1]:
         emp_pick = st.session_state.flt_employee
@@ -460,7 +423,7 @@ def run() -> None:
                 on_change=_on_flt_date_change,
             )
         else:
-            dates_have = _dates_with_pings(scoped, emp_pick, name_col)
+            dates_have = tracking_dates_with_pings(scoped, emp_pick)
             with st.popover(f"{sel_d:%Y/%m/%d}", use_container_width=True):
                 st.caption("Green = GPS data · Red = no data · Blue = selected")
                 _render_date_availability_picker(
@@ -469,28 +432,36 @@ def run() -> None:
                     d_hi=d_hi,
                 )
     with r1[2]:
-        st.selectbox("From time", options=tchoices, key="flt_from")
+        st.selectbox(
+            "From time",
+            options=tchoices,
+            key="flt_from",
+            on_change=tracking_commit_from_widgets,
+        )
     with r1[3]:
-        st.selectbox("To time", options=tchoices, key="flt_to")
+        st.selectbox(
+            "To time",
+            options=tchoices,
+            key="flt_to",
+            on_change=tracking_commit_from_widgets,
+        )
 
-    r2 = st.columns([0.75, 0.75, 0.75, 2.2, 1.1, 1.1])
+    r2 = st.columns([0.75, 0.75, 0.75, 2.5, 1.0])
     with r2[0]:
-        st.checkbox("Yards", key="flt_yards")
+        st.checkbox("Yards", key="flt_yards", on_change=tracking_commit_from_widgets)
     with r2[1]:
-        st.checkbox("Service", key="flt_service")
+        st.checkbox("Service", key="flt_service", on_change=tracking_commit_from_widgets)
     with r2[2]:
-        st.checkbox("Stores", key="flt_stores")
+        st.checkbox("Stores", key="flt_stores", on_change=tracking_commit_from_widgets)
     with r2[4]:
         if st.button("Reset filters", use_container_width=True):
-            st.session_state.committed = _default_committed(scoped, employees)
-            st.session_state.flt_widgets_ready = False
-            st.rerun()
-    with r2[5]:
-        if st.button("Apply filters", type="primary", use_container_width=True):
-            st.session_state.committed = _snapshot_from_widgets()
+            st.session_state[TRACKING_COMMITTED] = _default_committed(scoped, employees)
+            st.session_state[TRACKING_WIDGETS_READY] = False
+            st.session_state.pop(TRACKING_PRESERVE_DATE, None)
             st.rerun()
 
-    c = st.session_state.committed
+    # Live filter sync: analytics always match current widgets (no Apply step).
+    c = tracking_resolve_filters(scoped)
     emp = c["employee"]
     sel_date: date = c["date"]
     t_from = _parse_hhmm(c["from"])
@@ -708,15 +679,15 @@ def run() -> None:
 
     elif all_mode:
         st.info(
-            "Select **one employee** and click **Apply filters** to unlock KPIs, timeline, and productivity analytics. "
-            "Map below shows **all agents** for the selected date & time."
+            "Select **one employee** to unlock KPIs, timeline, and productivity analytics. "
+            "Map below shows **all agents** for the selected date and time."
         )
     else:
-        st.warning("No GPS data for this employee, date, and time window.")
+        st.warning(EMPTY_FILTERS_MSG)
 
     st.markdown('<div class="section-title">Route map</div>', unsafe_allow_html=True)
     if path_df.empty:
-        st.caption("Adjust filters and click **Apply filters**.")
+        st.warning(EMPTY_FILTERS_MSG)
         return
 
     fmap = build_map(
@@ -734,7 +705,7 @@ def run() -> None:
             fmap,
             use_container_width=True,
             height=520,
-            key="tracking_map",
+            key=f"tracking_map_{tracking_fingerprint(c)}",
             returned_objects=[],
         )
     except Exception as e:

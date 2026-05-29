@@ -18,6 +18,14 @@ from core import (
     sites_data_dir,
 )
 from daily_overview_analytics import compute_daily_overview, enrich_metadata_columns
+from dashboard_filters import (
+    OVERVIEW_COMMITTED,
+    OVERVIEW_FILTER_SYNCED,
+    drill_to_tracking,
+    overview_on_filter_change,
+    overview_resolve_filters,
+    overview_sync_widgets,
+)
 from responsive_ui import RESPONSIVE_DASHBOARD_CSS
 
 OVERVIEW_CSS = """
@@ -204,20 +212,6 @@ def _cached_overview(
     )
 
 
-def _drill_to_tracking(employee: str, sel_date: date) -> None:
-    st.session_state.committed = {
-        "employee": employee,
-        "date": sel_date,
-        "from": "00:00",
-        "to": "23:59",
-        "yards": True,
-        "service": True,
-        "stores": True,
-    }
-    st.session_state.flt_widgets_ready = False
-    st.switch_page("tracking.py")
-
-
 def _render_alert_center(ac: dict, sel_date: date) -> None:
     alerts = ac.get("alerts") or []
     summary = ac.get("summary") or {}
@@ -359,7 +353,7 @@ def _render_alert_center(ac: dict, sel_date: date) -> None:
                     key=f"ac_drill_{a['id']}",
                     use_container_width=True,
                 ):
-                    _drill_to_tracking(a["employee"], sel_date)
+                    drill_to_tracking(a["employee"], sel_date)
 
     if len(filtered) > 40:
         st.caption(f"… and {len(filtered) - 40} more alerts (narrow filters to see all).")
@@ -412,8 +406,8 @@ def run() -> None:
     d_hi = raw["_ts"].max().date()
     team_opts, region_opts = _filter_options()
 
-    if "do_committed" not in st.session_state:
-        st.session_state.do_committed = {
+    if OVERVIEW_COMMITTED not in st.session_state:
+        st.session_state[OVERVIEW_COMMITTED] = {
             "date": _default_day(raw),
             "teams": [],
             "regions": [],
@@ -421,14 +415,12 @@ def run() -> None:
             "search": "",
         }
 
-    if "do_filter_synced" not in st.session_state:
-        st.session_state.do_date = st.session_state.do_committed["date"]
-        st.session_state.do_filter_synced = True
+    if not st.session_state.get(OVERVIEW_FILTER_SYNCED):
+        overview_sync_widgets(st.session_state[OVERVIEW_COMMITTED])
+        st.session_state[OVERVIEW_FILTER_SYNCED] = True
 
     def _on_do_date_change() -> None:
-        dc = dict(st.session_state.do_committed)
-        dc["date"] = st.session_state.do_date
-        st.session_state.do_committed = dc
+        overview_on_filter_change()
         _filter_options.clear()
         _cached_overview.clear()
 
@@ -443,48 +435,52 @@ def run() -> None:
             on_change=_on_do_date_change,
         )
     with fc1[1]:
-        st.multiselect("Team", options=team_opts, key="do_teams", placeholder="All teams")
+        st.multiselect(
+            "Team",
+            options=team_opts,
+            key="do_teams",
+            placeholder="All teams",
+            on_change=overview_on_filter_change,
+        )
     with fc1[2]:
-        st.multiselect("Region", options=region_opts, key="do_regions", placeholder="All regions")
+        st.multiselect(
+            "Region",
+            options=region_opts,
+            key="do_regions",
+            placeholder="All regions",
+            on_change=overview_on_filter_change,
+        )
     with fc1[3]:
         st.multiselect(
             "Location type",
             options=["yard", "service", "store"],
             key="do_loc_types",
             placeholder="All types",
+            on_change=overview_on_filter_change,
         )
-    fc2 = st.columns([3.2, 0.85, 0.85])
+    fc2 = st.columns([3.2, 0.85])
     with fc2[0]:
-        st.text_input("Employee search", key="do_search", placeholder="Name contains…")
+        st.text_input(
+            "Employee search",
+            key="do_search",
+            placeholder="Name contains…",
+            on_change=overview_on_filter_change,
+        )
     with fc2[1]:
-        if st.button("Reset", use_container_width=True):
-            st.session_state.do_committed = {
+        if st.button("Reset filters", use_container_width=True):
+            st.session_state[OVERVIEW_COMMITTED] = {
                 "date": _default_day(raw),
                 "teams": [],
                 "regions": [],
                 "loc_types": [],
                 "search": "",
             }
-            st.session_state.do_date = st.session_state.do_committed["date"]
-            st.session_state.do_teams = []
-            st.session_state.do_regions = []
-            st.session_state.do_loc_types = []
-            st.session_state.do_search = ""
+            st.session_state[OVERVIEW_FILTER_SYNCED] = False
             _filter_options.clear()
             _cached_overview.clear()
             st.rerun()
-    with fc2[2]:
-        if st.button("Apply", type="primary", use_container_width=True):
-            st.session_state.do_committed = {
-                "date": st.session_state.do_date,
-                "teams": list(st.session_state.do_teams),
-                "regions": list(st.session_state.do_regions),
-                "loc_types": list(st.session_state.do_loc_types),
-                "search": st.session_state.do_search.strip(),
-            }
-            st.rerun()
 
-    dc = st.session_state.do_committed
+    dc = overview_resolve_filters()
     payload = _cached_overview(
         sites_folder,
         dc["date"].isoformat(),
@@ -569,7 +565,7 @@ def run() -> None:
         if drill and sel_rows:
             idx = sel_rows[0]
             emp = df_lb.iloc[idx]["employee"]
-            _drill_to_tracking(emp, dc["date"])
+            drill_to_tracking(emp, dc["date"])
 
     col_l, col_r = st.columns(2)
     pdist = payload["productivity_distribution"]
