@@ -13,8 +13,24 @@ from core import REQUIRED_COLUMNS, SITE_TYPE_MFC, SITE_TYPE_SERVICE, SITE_TYPE_S
 
 EARTH_R_KM = 6371.0088
 STATIONARY_SEGMENT_KM = 0.05  # 50 m between consecutive pings → stationary segment
-NEAR_SITE_KM = 0.20  # visit attribution radius
+# Fixed-site visit attribution radius.
+# Mobile GPS drift + dense built environments often push points outside a strict 200m geofence.
+# Use practical radii that improve operational classification.
+NEAR_SITE_KM = 0.45  # default/fallback (450 m)
 OFFSITE_KM = 2.5  # geo-fence style: far from any fixed site
+
+# Per site-type radii (km). Falls back to NEAR_SITE_KM for unknown types.
+SITE_MATCH_RADIUS_KM_BY_TYPE: dict[str, float] = {
+    SITE_TYPE_SERVICE: 0.50,  # service centres often have multi-building campuses
+    SITE_TYPE_MFC: 0.55,      # yards can be large compounds
+    SITE_TYPE_STORE: 0.35,    # stores are smaller / denser footprint
+}
+
+
+def site_match_radius_km(site_type: str | None) -> float:
+    if not site_type:
+        return NEAR_SITE_KM
+    return float(SITE_MATCH_RADIUS_KM_BY_TYPE.get(str(site_type), NEAR_SITE_KM))
 
 
 def haversine_km(
@@ -232,11 +248,15 @@ def compute_movement_analytics(
     if sites_df is not None and not sites_df.empty:
         d_min, nearest_type = site_proximity_batch(lat, lon, sites_df)
         geofence_violations = int(np.sum(d_min > OFFSITE_KM))
-        for st in (SITE_TYPE_MFC, SITE_TYPE_SERVICE, SITE_TYPE_STORE):
-            visit_by_type[st] = int(np.sum((d_min <= NEAR_SITE_KM) & (nearest_type == st)))
+        # Count site-proximate pings with type-specific radius.
+        if len(d_min) == n:
+            radius_by_ping = np.array([site_match_radius_km(t) for t in nearest_type], dtype=np.float64)
+            near = d_min <= radius_by_ping
+            for st in (SITE_TYPE_MFC, SITE_TYPE_SERVICE, SITE_TYPE_STORE):
+                visit_by_type[st] = int(np.sum(near & (nearest_type == st)))
 
     if sum(visit_by_type.values()) == 0:
-        most = "No fixed-site visits (200 m)"
+        most = "No fixed-site visits"
     else:
         most = max(visit_by_type, key=lambda k: visit_by_type[k])
 

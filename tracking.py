@@ -543,7 +543,7 @@ def run() -> None:
                 _kpi_card(
                     "Most visited type",
                     str(cur.most_visited_location_type)[:28],
-                    "Within 200 m of site",
+                    "Within ~350–550 m of site",
                 ),
                 _kpi_card(
                     "Avg stop duration",
@@ -598,7 +598,7 @@ def run() -> None:
                 _kpi_card(
                     "Operational visits",
                     str(fo["operational_visits"]),
-                    "Entries within 200 m of a fixed site",
+                    "Entries within ~350–550 m of a fixed site",
                 ),
                 _kpi_card(
                     "Avg visit duration",
@@ -666,7 +666,7 @@ def run() -> None:
             for line in cur.productivity_notes:
                 st.markdown(f"- {html.escape(line)}")
         with ic2:
-            st.markdown("**Location visits (pings within 200 m)**")
+            st.markdown("**Location visits (pings within ~350–550 m)**")
             vt = pd.DataFrame(
                 [{"Site type": k, "Pings": v} for k, v in cur.visit_by_type.items()]
             )

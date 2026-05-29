@@ -18,6 +18,7 @@ from analytics import (
     STATIONARY_SEGMENT_KM,
     detect_stops,
     haversine_km,
+    site_match_radius_km,
     site_nearest_with_index,
     slice_employee_window,
 )
@@ -73,7 +74,7 @@ def _segment_category(
     d_seg_km: float,
 ) -> str:
     """Classify segment starting at ping i (d_min / type at i)."""
-    if site_type is not None and d_min <= NEAR_SITE_KM and site_type in OPERATIONAL_TYPES:
+    if site_type is not None and d_min <= site_match_radius_km(site_type) and site_type in OPERATIONAL_TYPES:
         return TYPE_TO_SPLIT.get(site_type, "unknown_time_s")
     if d_seg_km >= STATIONARY_SEGMENT_KM:
         return "transit_time_s"
@@ -198,7 +199,9 @@ def compute_field_intelligence(
 
         if sites_df is not None and not sites_df.empty:
             d_min, site_idx, stypes = site_nearest_with_index(lat, lon, sites_df)
-            near = d_min <= NEAR_SITE_KM
+            # Type-specific radius improves real-world fixed-site classification.
+            radius_by_ping = np.array([site_match_radius_km(x) for x in stypes], dtype=np.float64)
+            near = d_min <= radius_by_ping
             stype_at = [str(x) for x in stypes]
             for i in range(len(dt_s)):
                 cat = _segment_category(
